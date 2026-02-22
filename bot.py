@@ -1,15 +1,16 @@
 import os
 import sys
 import subprocess
-import pkg_resources
+import importlib.metadata
 import asyncio
 import google.generativeai as genai
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
-# --- ПРОВЕРКА ВЕРСИИ БИБЛИОТЕКИ (чтоб не вылетала ошибка) ---
+# --- ПРОВЕРКА ВЕРСИИ БИБЛИОТЕКИ (альтернативный метод) ---
 try:
-    ptb_version = pkg_resources.get_distribution("python-telegram-bot").version
+    # Пробуем новый метод импорта (Python 3.8+)
+    ptb_version = importlib.metadata.version("python-telegram-bot")
     print(f"📦 Установлена версия python-telegram-bot: {ptb_version}")
     
     # Если версия старая (до 20.x) — принудительно обновляем
@@ -20,6 +21,7 @@ try:
         sys.exit(0)
 except Exception as e:
     print(f"⚠️ Не удалось проверить версию: {e}")
+    print("🔄 Продолжаем работу без проверки версии...")
 
 # --- НАСТРОЙКИ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -83,11 +85,16 @@ try:
 except Exception as e:
     print(f"❌ Ошибка при загрузке модели: {e}")
     print("⚠️ Пробуем gemini-1.5-flash как запасной вариант...")
-    model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
-        system_instruction=SYSTEM_PROMPT,
-        safety_settings=safety_settings
-    )
+    try:
+        model = genai.GenerativeModel(
+            model_name="gemini-1.5-flash",
+            system_instruction=SYSTEM_PROMPT,
+            safety_settings=safety_settings
+        )
+        print("✅ Модель Gemini 1.5 Flash загружена")
+    except Exception as e2:
+        print(f"❌ Критическая ошибка: не удалось загрузить ни одну модель: {e2}")
+        sys.exit(1)
 
 # Хранилище истории для каждого пользователя
 chat_sessions = {}
@@ -128,7 +135,7 @@ async def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("✅ Бот с Gemini 3 FLASH запущен и ждёт сообщения...")
+    print("✅ Бот с Gemini FLASH запущен и ждёт сообщения...")
     print("⚠️ Цензура ПОЛНОСТЬЮ отключена")
     
     # Запускаем бота
