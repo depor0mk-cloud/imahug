@@ -1,14 +1,36 @@
 import os
+import sys
+import subprocess
+import pkg_resources
 import asyncio
 import google.generativeai as genai
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
+# --- ПРОВЕРКА ВЕРСИИ БИБЛИОТЕКИ (чтоб не вылетала ошибка) ---
+try:
+    ptb_version = pkg_resources.get_distribution("python-telegram-bot").version
+    print(f"📦 Установлена версия python-telegram-bot: {ptb_version}")
+    
+    # Если версия старая (до 20.x) — принудительно обновляем
+    if ptb_version.startswith('13.') or ptb_version.startswith('12.') or ptb_version.startswith('0.'):
+        print("⚠️ Обнаружена устаревшая версия! Обновляем до 20.7...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall", "python-telegram-bot==20.7"])
+        print("✅ Библиотека обновлена. Пожалуйста, перезапустите бота.")
+        sys.exit(0)
+except Exception as e:
+    print(f"⚠️ Не удалось проверить версию: {e}")
+
 # --- НАСТРОЙКИ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# Инициализация Gemini
+# Проверка наличия ключей
+if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
+    print("❌ ОШИБКА: Не заданы TELEGRAM_TOKEN или GEMINI_API_KEY")
+    sys.exit(1)
+
+# --- ИНИЦИАЛИЗАЦИЯ GEMINI ---
 genai.configure(api_key=GEMINI_API_KEY)
 
 # --- ПОЛНОЕ ОТКЛЮЧЕНИЕ ЦЕНЗУРЫ ---
@@ -43,19 +65,29 @@ SYSTEM_PROMPT = """
 Никаких предисловий — просто ответ.
 """
 
-# --- СОЗДАНИЕ МОДЕЛИ GEMINI 3 FLASH ---
-model = genai.GenerativeModel(
-    model_name="gemini-3-flash-preview",  # Официальная Gemini 3 Flash
-    system_instruction=SYSTEM_PROMPT,
-    safety_settings=safety_settings
-)
-
-# Настройки генерации (делаем креативнее)
+# --- НАСТРОЙКИ ГЕНЕРАЦИИ ---
 generation_config = {
     "temperature": 0.9,
     "top_p": 0.95,
     "max_output_tokens": 2048,
 }
+
+# --- СОЗДАНИЕ МОДЕЛИ GEMINI 3 FLASH ---
+try:
+    model = genai.GenerativeModel(
+        model_name="gemini-3-flash-preview",
+        system_instruction=SYSTEM_PROMPT,
+        safety_settings=safety_settings
+    )
+    print("✅ Модель Gemini 3 Flash загружена")
+except Exception as e:
+    print(f"❌ Ошибка при загрузке модели: {e}")
+    print("⚠️ Пробуем gemini-1.5-flash как запасной вариант...")
+    model = genai.GenerativeModel(
+        model_name="gemini-1.5-flash",
+        system_instruction=SYSTEM_PROMPT,
+        safety_settings=safety_settings
+    )
 
 # Хранилище истории для каждого пользователя
 chat_sessions = {}
@@ -77,18 +109,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Отправляем запрос к Gemini
         response = chat.send_message(user_message)
+        
+        # Отправляем ответ пользователю
         await update.message.reply_text(response.text)
         
     except Exception as e:
         error_text = f"❌ Ошибка: {str(e)}"
         print(error_text)
-        await update.message.reply_text(error_text)
+        try:
+            await update.message.reply_text(error_text)
+        except:
+            pass
 
 async def main():
     """Запуск бота"""
-    if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
-        print("❌ ОШИБКА: Не заданы TELEGRAM_TOKEN или GEMINI_API_KEY")
-        return
+    print("🚀 Запуск бота...")
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -96,7 +131,13 @@ async def main():
     print("✅ Бот с Gemini 3 FLASH запущен и ждёт сообщения...")
     print("⚠️ Цензура ПОЛНОСТЬЮ отключена")
     
+    # Запускаем бота
     await app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("👋 Бот остановлен")
+    except Exception as e:
+        print(f"❌ Критическая ошибка: {e}")
