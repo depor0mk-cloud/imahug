@@ -1,16 +1,15 @@
 import os
 import sys
 import json
-import threading
+import asyncio
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import google.generativeai as genai
 import firebase_admin
 from firebase_admin import credentials, firestore
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
-from telegram import Bot
 
 print("🚀 Запуск бота...")
 
@@ -58,10 +57,7 @@ model = genai.GenerativeModel(
 )
 print("✅ Gemini загружен")
 
-# --- СОЗДАЁМ БОТА ---
-application = Application.builder().token(TELEGRAM_TOKEN).build()
-bot = application.bot
-
+# --- ОБРАБОТЧИК СООБЩЕНИЙ ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     user_message = update.message.text
@@ -83,21 +79,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Ошибка: {e}")
 
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-# --- HTTP СЕРВЕР ДЛЯ ВЕБХУКОВ ---
+# --- HTTP СЕРВЕР И ВЕБХУКИ ---
 class WebhookHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         content_length = int(self.headers['Content-Length'])
         post_data = self.rfile.read(content_length)
         
         async def process():
+            # Создаём Application внутри обработчика
+            app = Application.builder().token(TELEGRAM_TOKEN).build()
+            app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+            bot = app.bot
             update = Update.de_json(json.loads(post_data.decode()), bot)
-            await application.process_update(update)
+            await app.process_update(update)
         
-        import asyncio
         asyncio.run(process())
-        
         self.send_response(200)
         self.end_headers()
     
@@ -111,13 +107,13 @@ if __name__ == "__main__":
     port = int(os.environ.get('PORT', 10000))
     
     # Устанавливаем вебхук
-    import asyncio
-    async def setup():
+    async def setup_webhook():
+        bot = Bot(token=TELEGRAM_TOKEN)
         webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_URL', 'localhost')}/webhook"
         await bot.set_webhook(webhook_url)
         print(f"✅ Webhook set to {webhook_url}")
     
-    asyncio.run(setup())
+    asyncio.run(setup_webhook())
     
     # Запускаем HTTP сервер
     server = HTTPServer(('0.0.0.0', port), WebhookHandler)
