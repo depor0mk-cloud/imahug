@@ -1,23 +1,45 @@
 import os
 import sys
+import threading
 import json
-import asyncio
-from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from datetime import datetime
 
 import google.generativeai as genai
 import firebase_admin
 from firebase_admin import credentials, firestore
-from telegram import Update, Bot
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram import Bot, Update
+from telegram.ext import Updater, MessageHandler, Filters, CallbackContext
+import logging
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 print("🚀 Запуск бота...")
 
-# --- ТВОИ КЛЮЧИ (ВСЁ УЖЕ ВСТАВЛЕНО) ---
+# --- ТВОИ КЛЮЧИ ---
 TELEGRAM_TOKEN = "8568323288:AAGu8ajJXQXxzgpvnkUM8w3B5Byc_PpPjuA"
 GEMINI_API_KEY = "AIzaSyBp4CyAIWOihuvxXwcVgmJ7fVpbnC0oqlo"
 
-# --- ПОДКЛЮЧЕНИЕ К FIREBASE ---
+# --- HEALTHCHECK (для Render) ---
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+
+def run_health():
+    port = int(os.environ.get('PORT', 10000))
+    server = HTTPServer(('0.0.0.0', port), HealthHandler)
+    logger.info(f"✅ Health server on port {port}")
+    server.serve_forever()
+
+# Запускаем health-сервер в отдельном потоке
+health_thread = threading.Thread(target=run_health, daemon=True)
+health_thread.start()
+
+# --- FIREBASE ---
 try:
     cred = credentials.Certificate({
         "type": "service_account",
@@ -34,12 +56,12 @@ try:
     })
     firebase_admin.initialize_app(cred)
     db = firestore.client()
-    print("✅ Firebase подключен")
+    logger.info("✅ Firebase подключен")
 except Exception as e:
-    print(f"❌ Firebase ошибка: {e}")
+    logger.error(f"❌ Firebase ошибка: {e}")
     db = None
 
-# --- ИНИЦИАЛИЗАЦИЯ GEMINI ---
+# --- GEMINI ---
 genai.configure(api_key=GEMINI_API_KEY)
 safety_settings = [
     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -55,77 +77,57 @@ model = genai.GenerativeModel(
     system_instruction=SYSTEM_PROMPT,
     safety_settings=safety_settings
 )
-print("✅ Gemini загружен")
+logger.info("✅ Gemini загружен")
 
-# --- ОБРАБОТЧИК СООБЩЕНИЙ ---
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- ОБРАБОТЧИК СООБЩЕНИЙ (для старой версии python-telegram-bot) ---
+def handle_message(update: Update, context: CallbackContext):
     user_id = str(update.effective_user.id)
     user_message = update.message.text
+    
     if not user_message:
         return
+    
+    logger.info(f"📨 Сообщение от {user_id}: {user_message[:50]}...")
     
     try:
         response = model.generate_content(user_message)
         bot_response = response.text
         
         if db:
-            db.collection('chats').document(user_id).collection('messages').add({
-                'user': user_message,
-                'bot': bot_response,
-                'time': datetime.now()
-            })
+            try:
+                db.collection('chats').document(user_id).collection('messages').add({
+                    'user': user_message,
+                    'bot': bot_response,
+                    'time': datetime.now()
+                })
+            except Exception as fb_error:
+                logger.error(f"Firebase error: {fb_error}")
         
-        await update.message.reply_text(bot_response)
+        update.message.reply_text(bot_response)
+        logger.info(f"✅ Ответ отправлен")
     except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
-
-# --- HTTP СЕРВЕР И ВЕБХУКИ ---
-class WebhookHandler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        content_length = int(self.headers['Content-Length'])
-        post_data = self.rfile.read(content_length)
-        
-        async def process():
-            # Создаём Application внутри обработчика
-            app = Application.builder().token(TELEGRAM_TOKEN).build()
-            app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-            bot = app.bot
-            update = Update.de_json(json.loads(post_data.decode()), bot)
-            await app.process_update(update)
-        
-        asyncio.run(process())
-        self.send_response(200)
-        self.end_headers()
-    
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is running")
+        error_text = f"❌ Ошибка: {str(e)}"
+        logger.error(error_text)
+        update.message.reply_text(error_text)
 
 # --- ЗАПУСК ---
+def main():
+    logger.info("🚀 Запуск Telegram-бота (режим polling)...")
+    
+    # Создаём Updater (старая версия)
+    updater = Updater(token=TELEGRAM_TOKEN, use_context=True)
+    dp = updater.dispatcher
+    
+    # Добавляем обработчик
+    dp.add_handler(MessageHandler(Filters.text & (~Filters.command), handle_message))
+    
+    # Запускаем
+    updater.start_polling()
+    logger.info("✅ Бот запущен и ждёт сообщения...")
+    updater.idle()
+
 if __name__ == "__main__":
-    port = int(os.environ.get('PORT', 10000))
-    
-    # Устанавливаем вебхук с правильным URL
-    async def setup_webhook():
-        bot = Bot(token=TELEGRAM_TOKEN)
-        # ЯВНО УКАЗЫВАЕМ ТВОЙ URL
-        webhook_url = "https://imahug.onrender.com/webhook"
-        
-        try:
-            await bot.set_webhook(webhook_url)
-            print(f"✅ Webhook установлен на {webhook_url}")
-            
-            # Проверяем статус
-            webhook_info = await bot.get_webhook_info()
-            print(f"📊 Статус вебхука: {webhook_info}")
-        except Exception as e:
-            print(f"❌ Ошибка установки вебхука: {e}")
-            sys.exit(1)
-    
-    asyncio.run(setup_webhook())
-    
-    # Запускаем HTTP сервер
-    server = HTTPServer(('0.0.0.0', port), WebhookHandler)
-    print(f"✅ Server running on port {port}")
-    server.serve_forever()
+    try:
+        main()
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка: {e}")
