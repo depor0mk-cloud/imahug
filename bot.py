@@ -13,7 +13,7 @@ from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
 print("🚀 Запуск бота...")
 
-# --- ТВОИ КЛЮЧИ ---
+# --- ТВОИ КЛЮЧИ (ВСЁ УЖЕ ВСТАВЛЕНО) ---
 TELEGRAM_TOKEN = "8568323288:AAGu8ajJXQXxzgpvnkUM8w3B5Byc_PpPjuA"
 GEMINI_API_KEY = "AIzaSyBp4CyAIWOihuvxXwcVgmJ7fVpbnC0oqlo"
 
@@ -106,12 +106,22 @@ class WebhookHandler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 10000))
     
-    # Устанавливаем вебхук
+    # Устанавливаем вебхук с правильным URL
     async def setup_webhook():
         bot = Bot(token=TELEGRAM_TOKEN)
-        webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_URL', 'localhost')}/webhook"
-        await bot.set_webhook(webhook_url)
-        print(f"✅ Webhook set to {webhook_url}")
+        # ЯВНО УКАЗЫВАЕМ ТВОЙ URL
+        webhook_url = "https://imahug.onrender.com/webhook"
+        
+        try:
+            await bot.set_webhook(webhook_url)
+            print(f"✅ Webhook установлен на {webhook_url}")
+            
+            # Проверяем статус
+            webhook_info = await bot.get_webhook_info()
+            print(f"📊 Статус вебхука: {webhook_info}")
+        except Exception as e:
+            print(f"❌ Ошибка установки вебхука: {e}")
+            sys.exit(1)
     
     asyncio.run(setup_webhook())
     
