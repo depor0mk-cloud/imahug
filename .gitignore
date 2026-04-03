@@ -1,4 +1,21 @@
-*.pyc
+# Python
 __pycache__/
-.env
-*.json
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+
+# Конфиг с ключами
+config.py
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
