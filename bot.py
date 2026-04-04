@@ -1,11 +1,11 @@
 import logging
 import os
+import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 import requests
-import asyncio
 
-# Конфиг (для Render используем переменные окружения)
+# Конфиг
 BOT_TOKEN = os.getenv('BOT_TOKEN', '8665595835:AAHOuVKY2VFYoWm8t0KRt9Abl6Sk0d0X_f8')
 WEATHER_KEY = os.getenv('WEATHER_KEY', '07429fb452f7c75e79ded39101b5e6a4')
 NEWS_KEY = os.getenv('NEWS_KEY', '6ba268f9fe9d4d789aa0c47ce5c34658')
@@ -28,12 +28,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/city <название> - сменить город\n"
         "/stop - отписаться"
     )
+    logger.info(f"New subscriber: {user_id}")
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.chat.id
     if user_id in subscribers:
         del subscribers[user_id]
         await update.message.reply_text("Отписка выполнена")
+        logger.info(f"Unsubscribed: {user_id}")
     else:
         await update.message.reply_text("Вы не подписаны")
 
@@ -51,7 +53,7 @@ async def weather(update: Update, context: ContextTypes.DEFAULT_TYPE):
             desc = d['weather'][0]['description']
             await update.message.reply_text(f"🌤 {city}\n🌡 {temp}°C, {desc}")
         else:
-            await update.message.reply_text("❌ Ошибка получения погоды")
+            await update.message.reply_text("❌ Город не найден")
     except Exception as e:
         logger.error(f"Weather error: {e}")
         await update.message.reply_text("❌ Ошибка получения погоды")
@@ -63,10 +65,13 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if r.status_code == 200:
             articles = r.json().get('articles', [])
-            text = "📰 Новости:\n\n"
-            for i, a in enumerate(articles, 1):
-                text += f"{i}. {a['title']}\n\n"
-            await update.message.reply_text(text)
+            if articles:
+                text = "📰 Новости:\n\n"
+                for i, a in enumerate(articles, 1):
+                    text += f"{i}. {a['title']}\n\n"
+                await update.message.reply_text(text)
+            else:
+                await update.message.reply_text("Новостей нет")
         else:
             await update.message.reply_text("❌ Ошибка загрузки новостей")
     except Exception as e:
@@ -86,13 +91,16 @@ async def city(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     subscribers[user_id]['city'] = new_city
     await update.message.reply_text(f"✅ Город изменен на {new_city}")
+    logger.info(f"City changed for {user_id}: {new_city}")
 
 async def send_notifications(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("Sending notifications...")
+    logger.info(f"Sending notifications to {len(subscribers)} users")
+    
     for user_id, data in list(subscribers.items()):
         try:
             city_name = data.get('city', 'Москва')
             
+            # Погода
             url = f"http://api.openweathermap.org/data/2.5/weather?q={city_name}&appid={WEATHER_KEY}&lang=ru&units=metric"
             r = requests.get(url, timeout=10)
             weather_text = "Погода недоступна"
@@ -103,6 +111,7 @@ async def send_notifications(context: ContextTypes.DEFAULT_TYPE):
                 desc = d['weather'][0]['description']
                 weather_text = f"🌤 {city_name}: {temp}°C, {desc}"
             
+            # Новости
             url = f"https://newsapi.org/v2/top-headlines?country=ru&pageSize=1&apiKey={NEWS_KEY}"
             r = requests.get(url, timeout=10)
             news_text = "Новости недоступны"
@@ -114,37 +123,46 @@ async def send_notifications(context: ContextTypes.DEFAULT_TYPE):
             
             msg = f"🔔 Сводка дня\n\n{weather_text}\n\n{news_text}"
             await context.bot.send_message(chat_id=user_id, text=msg)
+            logger.info(f"Notification sent to {user_id}")
             
         except Exception as e:
             logger.error(f"Notification error for {user_id}: {e}")
         
         await asyncio.sleep(0.5)
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Exception: {context.error}")
+
 def main():
+    logger.info("Starting bot...")
+    
     # Создаем приложение
-    application = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).build()
     
-    # Добавляем обработчики
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CommandHandler('stop', stop))
-    application.add_handler(CommandHandler('weather', weather))
-    application.add_handler(CommandHandler('news', news))
-    application.add_handler(CommandHandler('city', city))
+    # Обработчики команд
+    app.add_handler(CommandHandler('start', start))
+    app.add_handler(CommandHandler('stop', stop))
+    app.add_handler(CommandHandler('weather', weather))
+    app.add_handler(CommandHandler('news', news))
+    app.add_handler(CommandHandler('city', city))
     
-    # Планировщик уведомлений (каждые 12 часов)
-    if application.job_queue:
-        application.job_queue.run_repeating(
-            send_notifications,
-            interval=43200,
-            first=60
-        )
+    # Обработчик ошибок
+    app.add_error_handler(error_handler)
     
-    logger.info("Bot starting...")
+    # Планировщик (каждые 12 часов)
+    app.job_queue.run_repeating(
+        send_notifications,
+        interval=43200,
+        first=120
+    )
     
-    # Запуск с правильными параметрами для Render
-    application.run_polling(
+    logger.info("Bot is running!")
+    
+    # Запуск
+    app.run_polling(
         allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True
+        drop_pending_updates=True,
+        close_loop=False
     )
 
 if __name__ == '__main__':
